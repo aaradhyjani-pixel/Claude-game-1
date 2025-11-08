@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+<title>Jump Runner — Upload Your Own Sprite</title>
+<style>
+  :root {
+    --bg: #0f172a;        /* slate-900 */
+    --panel: #111827;     /* gray-900 */
+    --accent: #22d3ee;    /* cyan-400 */
+    --text: #e5e7eb;      /* gray-200 */
+    --muted: #9ca3af;     /* gray-400 */
+    --good: #10b981;      /* emerald-500 */
+    --bad:  #ef4444;      /* red-500 */
+  }
+  html, body { height: 100%; margin: 0; background: radial-gradient(1200px 700px at 70% -10%, #172554, var(--bg)); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol"; }
+  .wrap { display: grid; grid-template-rows: auto 1fr auto; min-height: 100%; }
+  header { padding: 12px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; letter-spacing: .3px; color: #e2e8f0; }
+  header .pill { display: inline-flex; align-items: center; gap: 8px; background: #0b1220; border: 1px solid #1f2937; padding: 8px 10px; border-radius: 12px; }
+  header input[type="file"] { display: none; }
+  header .btn, .overlay .btn { cursor: pointer; border: 1px solid #1f2937; background: #0b1220; color: var(--text); padding: 8px 12px; border-radius: 10px; font-weight: 600; }
+  header .btn:hover, .overlay .btn:hover { border-color: #334155; }
+  header input[type="text"] { width: 220px; background: #0b1220; border: 1px solid #1f2937; color: var(--text); padding: 8px 10px; border-radius: 10px; outline: none; }
+  main { display: grid; place-items: center; padding: 10px; }
+  canvas { width: min(92vw, 520px); height: calc(min(92vw, 520px) * 1.3333); max-height: 86vh; border-radius: 14px; background: linear-gradient(#87CEEB, #F0E68C); box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 0 0 2px rgba(255,255,255,.05); touch-action: none; }
+  .overlay {
+    position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none;
+  }
+  .card {
+    pointer-events: auto; background: rgba(2,6,23,.78); backdrop-filter: blur(6px);
+    border: 1px solid #1f2937; border-radius: 14px; padding: 16px 18px; width: min(90vw, 520px);
+    display: grid; gap: 10px;
+  }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .k { color: var(--muted); }
+  .v { color: #f1f5f9; font-weight: 700; }
+  .hint { color: var(--muted); font-size: 14px; }
+  footer { display: flex; justify-content: center; padding: 10px; font-size: 12px; color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Jump <span style="color:var(--accent)">Runner</span></h1>
+    <label class="pill" title="Upload your sprite">
+      <input id="fileInput" type="file" accept="image/*" />
+      <span>📸 Upload Sprite</span>
+    </label>
+    <div class="pill" style="gap:6px;">
+      <input id="urlInput" type="text" placeholder="Paste image URL…" />
+      <button id="useUrlBtn" class="btn">Use URL</button>
+    </div>
+    <button id="startBtn" class="btn">Start</button>
+    <span class="pill" style="color:#93c5fd;">⬆️ Space / Tap to jump</span>
+  </header>
+
+  <main>
+    <canvas id="game" width="390" height="520"></canvas>
+  </main>
+
+  <footer>No libraries • Single file • Works offline • High score saved locally</footer>
+</div>
+
+<div class="overlay" id="overlay" aria-hidden="true"></div>
+
+<script>
+(function(){
+  // Canvas setup with DPR scaling
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  function fitCanvas() {
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    // Maintain aspect (3:4 ~ 390x520) while honoring CSS size
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+    canvas.width  = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  new ResizeObserver(fitCanvas).observe(canvas);
+  fitCanvas();
+
+  // UI Elements
+  const fileInput = document.getElementById('fileInput');
+  const urlInput  = document.getElementById('urlInput');
+  const useUrlBtn = document.getElementById('useUrlBtn');
+  const startBtn  = document.getElementById('startBtn');
+  const overlay   = document.getElementById('overlay');
+
+  // Game constants
+  const G = 0.8;          // gravity
+  const JUMP = -15;       // jump impulse
+  const CACTUS_W = 40;    // cactus width
+  const CACTUS_H = 60;    // cactus height
+  const SPEED = 4;        // horizontal speed
+  const SPAWN_MS = 1800;  // cactus spawn interval
+  const FLOOR_Y_FRAC = 0.85; // floor level (as fraction of height)
+
+  // State
+  let state = 'menu'; // 'menu' | 'running' | 'gameover'
+  let player, cacti, score, hi, lastSpawn, lastTime, floorY;
+  let spriteImg = null;   // Image object (uploaded / URL)
+  let spriteReady = false;
+  let spriteScale = 1;    // dynamic scale
+  let isOnGround = true;  // track if player is on ground
+
+  hi = Number(localStorage.getItem('jump_runner_hi') || 0);
+
+  function resetGame() {
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    floorY = H * FLOOR_Y_FRAC;
+
+    player = {
+      x: W * 0.2,
+      y: floorY - 30, // start on ground
+      vy: 0,
+      r: 30, // collision radius
+      w: 50, // width for sprite
+      h: 50, // height for sprite
+      angle: 0
+    };
+    cacti = [];
+    score = 0;
+    isOnGround = true;
+    lastSpawn = performance.now();
+    lastTime = performance.now();
+  }
+
+  function spawnCactus() {
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    const cactus = {
+      x: W + CACTUS_W,
+      y: floorY - CACTUS_H,
+      w: CACTUS_W,
+      h: CACTUS_H,
+      passed: false,
+    };
+    cacti.push(cactus);
+  }
+
+  function update(dt) {
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+
+    // Player physics - gravity
+    player.vy += G;
+    player.y  += player.vy;
+
+    // Ground collision
+    const groundY = floorY - player.h / 2;
+    if (player.y >= groundY) {
+      player.y = groundY;
+      player.vy = 0;
+      isOnGround = true;
+    } else {
+      isOnGround = false;
+    }
+
+    // Cacti
+    for (let i = cacti.length - 1; i >= 0; i--) {
+      const c = cacti[i];
+      c.x -= SPEED;
+
+      // Score when passed
+      if (!c.passed && c.x + c.w < player.x) {
+        c.passed = true;
+        score++;
+        hi = Math.max(hi, score);
+        localStorage.setItem('jump_runner_hi', String(hi));
+      }
+
+      // Collision - simple rectangle overlap
+      const playerLeft = player.x - player.w / 2;
+      const playerRight = player.x + player.w / 2;
+      const playerTop = player.y - player.h / 2;
+      const playerBottom = player.y + player.h / 2;
+
+      if (playerRight > c.x && playerLeft < c.x + c.w &&
+          playerBottom > c.y && playerTop < c.y + c.h) {
+        gameOver();
+        return;
+      }
+
+      // Remove offscreen
+      if (c.x + c.w < -20) cacti.splice(i, 1);
+    }
+  }
+
+  function draw() {
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+
+    // Clear sky
+    ctx.fillStyle = '#87CEEB';
+    ctx.fillRect(0, 0, W, floorY);
+
+    // Ground
+    ctx.fillStyle = '#D2B48C';
+    ctx.fillRect(0, floorY, W, H - floorY);
+
+    // Ground line
+    ctx.fillStyle = '#8B7355';
+    ctx.fillRect(0, floorY - 2, W, 2);
+
+    // Cacti
+    for (const c of cacti) {
+      drawCactus(c.x, c.y, c.w, c.h);
+    }
+
+    // Player
+    drawPlayer();
+
+    // Score HUD
+    ctx.font = 'bold 24px ui-sans-serif, system-ui, -apple-system';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(0,0,0,.8)';
+    ctx.fillText(`Score: ${score}`, 12, 10);
+    ctx.fillStyle = 'rgba(0,0,0,.5)';
+    ctx.fillText(`Best: ${hi}`, 12, 38);
+  }
+
+  function drawCactus(x, y, w, h) {
+    // Main body
+    ctx.fillStyle = '#2d5016';
+    ctx.fillRect(x + w * 0.35, y, w * 0.3, h);
+
+    // Left arm
+    ctx.fillRect(x + w * 0.1, y + h * 0.3, w * 0.2, w * 0.15);
+    ctx.fillRect(x + w * 0.1, y + h * 0.15, w * 0.15, h * 0.25);
+
+    // Right arm
+    ctx.fillRect(x + w * 0.7, y + h * 0.45, w * 0.2, w * 0.15);
+    ctx.fillRect(x + w * 0.75, y + h * 0.25, w * 0.15, h * 0.3);
+  }
+
+  function drawPlayer() {
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+
+    if (spriteReady && spriteImg && spriteImg.width > 0) {
+      // Draw uploaded sprite
+      const sw = player.w;
+      const sh = player.h;
+      ctx.drawImage(spriteImg, player.x - sw/2, player.y - sh/2, sw, sh);
+
+    } else {
+      // Fallback: simple square
+      ctx.fillStyle = '#FF6B6B';
+      ctx.fillRect(player.x - player.w/2, player.y - player.h/2, player.w, player.h);
+
+      // Eyes
+      ctx.fillStyle = '#000';
+      const eyeSize = 5;
+      ctx.fillRect(player.x - 12, player.y - 10, eyeSize, eyeSize);
+      ctx.fillRect(player.x + 7, player.y - 10, eyeSize, eyeSize);
+    }
+  }
+
+  // Game loop
+  function frame(t) {
+    if (state === 'running') {
+      const dt = Math.min(32, t - lastTime);
+      lastTime = t;
+      if (t - lastSpawn > SPAWN_MS) { spawnCactus(); lastSpawn = t; }
+      update(dt);
+      draw();
+    } else {
+      // Draw idle scene
+      draw();
+      drawOverlay();
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function drawOverlay() {
+    overlay.innerHTML = '';
+    overlay.setAttribute('aria-hidden','false');
+
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    if (state === 'menu') {
+      card.innerHTML = `
+        <div class="row"><div class="k">Status</div><div class="v">Ready</div></div>
+        <div class="row"><div class="k">Sprite</div><div class="v">${spriteReady ? '✅ Loaded' : 'Default circle'}</div></div>
+        <div class="row"><div class="k">How to Play</div><div class="v">Space / Click / Tap to jump</div></div>
+        <div class="hint">Upload a face or logo for fun. Then press <b>Start</b>.</div>
+        <div class="row"><button class="btn" id="ovStart">Start</button></div>
+      `;
+      overlay.appendChild(card);
+      card.querySelector('#ovStart').onclick = startRun;
+
+    } else if (state === 'gameover') {
+      card.innerHTML = `
+        <div class="row"><div class="v" style="color:var(--bad)">Game Over</div><div class="v">Score: ${score}</div></div>
+        <div class="row"><div class="k">Best</div><div class="v" style="color:var(--good)">${hi}</div></div>
+        <div class="hint">Press Space / Tap to try again.</div>
+        <div class="row"><button class="btn" id="ovRetry">Restart</button></div>
+      `;
+      overlay.appendChild(card);
+      card.querySelector('#ovRetry').onclick = startRun;
+    }
+  }
+
+  function startRun() {
+    resetGame();
+    state = 'running';
+    overlay.setAttribute('aria-hidden','true');
+    lastTime = performance.now();
+    lastSpawn = performance.now() + 500; // slight delay
+  }
+
+  function gameOver() {
+    state = 'gameover';
+    draw();
+    drawOverlay();
+  }
+
+  // Controls
+  function jump() {
+    if (state === 'menu') startRun();
+    else if (state === 'gameover') startRun();
+    else if (isOnGround) {
+      player.vy = JUMP;
+      isOnGround = false;
+    }
+  }
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.key === ' ') { e.preventDefault(); jump(); }
+  }, { passive:false });
+  canvas.addEventListener('pointerdown', (e) => { e.preventDefault(); jump(); }, { passive:false });
+
+  startBtn.addEventListener('click', startRun);
+
+  // Sprite loaders
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    await loadSprite(url, true);
+  });
+
+  useUrlBtn.addEventListener('click', async () => {
+    const url = (urlInput.value || '').trim();
+    if (!url) return;
+    await loadSprite(url, false);
+  });
+
+  async function loadSprite(url, revokeLater) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        spriteImg = img;
+        spriteReady = true;
+        if (revokeLater) {
+          // revoke after next frame to ensure texture upload done
+          requestAnimationFrame(() => URL.revokeObjectURL(url));
+        }
+        // If in menu, update overlay to show "Loaded"
+        if (state !== 'running') drawOverlay();
+        resolve();
+      };
+      img.onerror = (err) => {
+        spriteImg = null; spriteReady = false;
+        alert('Could not load that image. Try a different file/URL.');
+        if (state !== 'running') drawOverlay();
+        reject(err);
+      };
+      img.src = url;
+    });
+  }
+
+  // Kick things off
+  resetGame();
+  draw();
+  drawOverlay();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
