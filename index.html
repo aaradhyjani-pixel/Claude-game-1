@@ -90,8 +90,8 @@
   const overlay   = document.getElementById('overlay');
 
   // Game constants
-  const G = 0.8;          // gravity
-  const JUMP = -15;       // jump impulse
+  const G = 0.9;          // gravity
+  const JUMP = -18;       // jump impulse (increased for more responsive jump)
   const CACTUS_W = 40;    // cactus width
   const CACTUS_H = 60;    // cactus height
   const SPEED = 4;        // horizontal speed
@@ -210,13 +210,7 @@
     // Player
     drawPlayer();
 
-    // Score HUD
-    ctx.font = 'bold 24px ui-sans-serif, system-ui, -apple-system';
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    ctx.fillStyle = 'rgba(0,0,0,.8)';
-    ctx.fillText(`Score: ${score}`, 12, 10);
-    ctx.fillStyle = 'rgba(0,0,0,.5)';
-    ctx.fillText(`Best: ${hi}`, 12, 38);
+    // Score HUD removed - only shown at game over
   }
 
   function drawCactus(x, y, w, h) {
